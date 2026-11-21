@@ -1,0 +1,18 @@
+@import 'tailwindcss';
+
+/* Workspace UI package lives outside this app — let Tailwind scan it. */
+@source '../../../../packages/ui/src';
+/* Test-only classes must not ship in the production CSS. */
+@source not '../**/*.test.tsx';
+
+@theme {
+  --font-sans:
+    'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+    system-ui, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

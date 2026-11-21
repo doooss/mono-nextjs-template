@@ -1,0 +1,20 @@
+node_modules
+apps/*/dist
+packages/*/dist
+apps/*/.next
+apps/*/out
+apps/*/build
+apps/*/coverage
+packages/*/coverage
+apps/*/test-results
+apps/*/playwright-report
+.turbo
+pnpm-lock.yaml
+next-env.d.ts
+
+# {{placeholder}} 템플릿 — prettier 가 { { id } } 로 깨뜨림
+agent-work/_templates/
+docs/adr/_template.md
+
+# vendored agent skill — upstream 원본 유지 (vercel/next.js skills/next-bundle-optimizer)
+.claude/skills/next-bundle-optimizer/

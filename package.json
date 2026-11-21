@@ -1,0 +1,39 @@
+{
+  "name": "nextjs-template",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:web": "turbo run dev --filter=web",
+    "start": "turbo run start --filter=web",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "clean": "find . -name '.next' -type d -not -path './node_modules/*' -prune -exec rm -rf {} + 2>/dev/null; find . -name '.turbo' -type d -not -path './node_modules/*' -prune -exec rm -rf {} + 2>/dev/null; find . -name 'dist' -type d -not -path './node_modules/*' -prune -exec rm -rf {} + 2>/dev/null; echo 'Clean complete'",
+    "spec:shots": "pnpm --filter web spec:shots",
+    "spec:shots:changed": "SPEC_CHANGED=1 pnpm --filter web spec:shots",
+    "client-js": "node scripts/client-js.mjs",
+    "analyze": "pnpm --filter web exec next analyze",
+    "analyze:snapshot": "pnpm --filter web exec next analyze --output --snapshot",
+    "docker:build": "docker build -f docker/web.Dockerfile -t web:local .",
+    "task:new": "node scripts/agent-work.mjs new",
+    "task:status": "node scripts/agent-work.mjs status",
+    "adr:new": "node scripts/agent-work.mjs adr",
+    "ship:check": "node scripts/agent-work.mjs check"
+  },
+  "devDependencies": {
+    "@repo/prettier-config": "workspace:*",
+    "prettier": "^3.10.1",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "turbo": "^2.11.13",
+    "typescript": "6.0.3"
+  },
+  "prettier": "@repo/prettier-config",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,168 @@
+name: Hotfix Release
+
+# OPTIONAL — vars.RELEASE_ENABLED == 'true' 일 때만 동작 (develop / main 흐름 전제 — trunk 운영이면 끄고 둔다).
+# main 직접 PR 머지(핫픽스) → patch 버전 발행 → (vars.DEPLOY_ENABLED) prod 배포.
+#   release : main HEAD 위에 release 커밋 + vX.Y.Z 태그 (X.Y.Z = 직전 stable patch+1) + GitHub Release(latest)
+#   deploy  : vX.Y.Z 기준 prod 배포 — release 에만 의존 (사후 정리 실패가 배포를 막지 않는다)
+#   post    : ① 진행 중 canary 를 핫픽스 다음 버전으로 재태깅 ② main → develop 역머지
+#             (충돌 시 backmerge/<tag> 브랜치로 PR — main 을 PR head 로 쓰지 않는다)
+#             ③ github.token 이면 역머지 push 가 워크플로우를 트리거하지 않으므로 Sandbox Release 를 직접 dispatch
+#   post 가 실패하면 "Re-run failed jobs" — release job 출력이 재사용된다.
+#   release job 이 태그 push 뒤에 실패했다면 재실행은 skip (HEAD 에 이미 stable 태그) → deploy / post 도 생략된다.
+#   이때 복구 = Actions → Deploy (reusable) 로 그 태그 수동 배포 + 역머지 수동.
+#   충돌 PR 생성은 저장소 설정 "Allow GitHub Actions to create and approve pull requests" 가 켜져 있어야 한다 (github.token).
+#
+# release 커밋은 "chore(release):" 로 시작하므로 이 워크플로우를 재트리거하지 않는다.
+# docs / ci 커밋만 머지돼도 patch 태그를 발행한다 (main 단독 커밋을 태그로 고정 — 다음 prod release 의 main 검사 기준).
+
+on:
+  push:
+    branches: [main]
+
+# 커밋마다 고유 group — 공유 group 이면 대기 중인 hotfix run 이 다음 Production Release 에 밀려 취소된다.
+# 동시 실행 시 main push 가 non-fast-forward / lease 실패로 명시적으로 실패한다 (조용한 유실 없음).
+concurrency:
+  group: release-hotfix-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+  actions: write
+
+jobs:
+  release:
+    if: vars.RELEASE_ENABLED == 'true' && !startsWith(github.event.head_commit.message, 'chore(release):')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      tag: ${{ steps.plan.outputs.tag }}
+      canary_latest: ${{ steps.plan.outputs.canary_latest }}
+      canary_retag: ${{ steps.plan.outputs.canary_retag }}
+      canary_tags: ${{ steps.plan.outputs.canary_tags }}
+      release_sha: ${{ steps.commit.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Plan hotfix version
+        id: plan
+        run: node .github/scripts/release.mjs hotfix
+
+      - name: Release commit + tag + main push
+        id: commit
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node .github/scripts/release.mjs set-version "$VERSION"
+          git commit -am "chore(release): $TAG [skip ci]"
+          git tag -a "$TAG" -m "$TAG (hotfix)"
+          git push origin HEAD:refs/heads/main
+          git push origin "refs/tags/$TAG"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: GitHub Release
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          NOTES: ${{ steps.plan.outputs.notes_file }}
+        run: gh release create "$TAG" --latest --verify-tag --title "$TAG (hotfix)" --notes-file "$NOTES"
+
+  deploy:
+    needs: release
+    if: needs.release.outputs.skip == 'false' && vars.DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: prod
+      tag: ${{ needs.release.outputs.tag }}
+    secrets: inherit
+
+  post:
+    needs: release
+    if: needs.release.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+      HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Re-version canaries ahead of hotfix
+        if: needs.release.outputs.canary_latest != ''
+        env:
+          LATEST: ${{ needs.release.outputs.canary_latest }}
+          RETAG: ${{ needs.release.outputs.canary_retag }}
+          CANARY_TAGS: ${{ needs.release.outputs.canary_tags }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse -q --verify "refs/tags/$RETAG" >/dev/null; then
+            git tag -a "$RETAG" "$(git rev-list -n 1 "$LATEST")" -m "$RETAG (re-tag of $LATEST after hotfix $TAG)"
+            git push origin "refs/tags/$RETAG"
+          fi
+          gh release view "$RETAG" >/dev/null 2>&1 || gh release create "$RETAG" --prerelease --verify-tag --title "$RETAG" \
+            --notes "핫픽스 $TAG 발행으로 $LATEST 를 $RETAG 로 재태깅 (코드 동일). 변경 내역은 $LATEST 노트 참고."
+          for t in $CANARY_TAGS; do
+            gh release delete "$t" --yes --cleanup-tag || git push origin --delete "refs/tags/$t" || true
+          done
+
+      - name: Back-merge main → develop
+        id: backmerge
+        env:
+          RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
+        run: |
+          if ! git ls-remote --exit-code --heads origin develop >/dev/null; then
+            echo "::notice::develop 브랜치 없음 — 역머지 생략"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin develop
+          git checkout -B develop origin/develop
+          if git merge-base --is-ancestor "$RELEASE_SHA" HEAD; then
+            echo "::notice::이미 develop 에 포함 — 역머지 생략"
+            exit 0
+          fi
+          if git merge --no-ff "$RELEASE_SHA" -m "chore: back-merge $TAG into develop"; then
+            git push origin HEAD:refs/heads/develop
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            # 충돌 해결이 main 에 커밋되지 않도록 전용 브랜치를 PR head 로 쓴다
+            branch="backmerge/$TAG"
+            # 재실행 시 사람이 이미 올린 충돌 해결을 지우지 않도록 브랜치가 없을 때만 생성
+            if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+              git push origin "$RELEASE_SHA:refs/heads/$branch"
+            fi
+            echo "::warning::main → develop 역머지 충돌 — $branch → develop PR. 다음 prod release 전 merge commit 으로 머지 (squash 금지)."
+            gh pr view "$branch" >/dev/null 2>&1 || gh pr create --base develop --head "$branch" \
+              --title "chore: back-merge $TAG into develop" \
+              --body "핫픽스 $TAG 역머지. 이 브랜치에서 충돌을 해결하고 **merge commit** 으로 머지 (squash 하면 patch 가 달라져 Production Release 의 main 검사가 막힌다). 미머지 시 Production Release 가 차단된다."
+          fi
+
+      - name: Trigger Sandbox Release (github.token)
+        # github.token push 는 워크플로우를 트리거하지 않는다 — workflow_dispatch 는 예외적으로 허용됨
+        if: steps.backmerge.outputs.pushed == 'true' && env.HAS_RELEASE_TOKEN != 'true'
+        run: gh workflow run sandbox-release.yml --ref develop

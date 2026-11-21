@@ -1,0 +1,38 @@
+# dependencies
+node_modules
+.pnp
+.pnp.*
+
+# build output (앱 / 패키지 루트에만 — src/app 아래 같은 이름의 라우트 폴더는 추적)
+apps/*/.next/
+apps/*/out/
+apps/*/build/
+apps/*/dist/
+packages/*/dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# turbo
+.turbo
+
+# testing
+apps/*/coverage/
+packages/*/coverage/
+apps/*/test-results/
+apps/*/playwright-report/
+apps/*/blob-report/
+apps/*/playwright/.cache/
+
+# env files (commit only *.example)
+.env*
+!.env.example
+
+# misc
+.DS_Store
+*.pem
+.vercel
+npm-debug.log*
+pnpm-debug.log*
+
+# local release marker written by CI deploy
+apps/*/.release-version

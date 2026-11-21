@@ -1,0 +1,75 @@
+name: Sandbox Release
+
+# OPTIONAL — vars.RELEASE_ENABLED == 'true' 일 때만 동작 (develop / main 브랜치 흐름 전제).
+# develop push(머지) → canary pre-release(vX.Y.Z-canary.N) 발행 → (vars.DEPLOY_ENABLED) sandbox 배포.
+# X.Y.Z = 최신 stable 의 patch+1. 노트 = 직전 태그 이후 커밋을 conventional type 별 분류.
+# 같은 커밋에 canary 태그가 이미 있으면 (재실행) 태그 발행은 건너뛰고 배포만 다시 한다.
+# 직전 태그 이후 docs / ci 커밋뿐이면 발행 / 배포 모두 생략 (release.mjs NON_DEPLOY_TYPES).
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: release-sandbox
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  prerelease:
+    if: vars.RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      deploy: ${{ steps.plan.outputs.deploy }}
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Plan canary version
+        id: plan
+        run: node .github/scripts/release.mjs canary
+
+      - name: Tag + pre-release
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          NOTES: ${{ steps.plan.outputs.notes_file }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" --prerelease --verify-tag --title "$TAG" --notes-file "$NOTES"
+
+      # 재실행 복구 — 이전 run 이 태그 push 뒤 pre-release 생성에서 실패했으면 HEAD 에 태그만 있다 (plan = skip)
+      - name: Ensure pre-release exists
+        if: steps.plan.outputs.skip == 'true' && steps.plan.outputs.tag != ''
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --prerelease --verify-tag --title "$TAG" \
+            --notes "재실행으로 생성 (이전 run 의 pre-release 생성 실패 복구). 변경 내역은 이전 canary 와 비교."
+
+  deploy:
+    needs: prerelease
+    if: needs.prerelease.outputs.deploy == 'true' && vars.DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: sandbox
+      tag: ${{ needs.prerelease.outputs.tag }}
+    secrets: inherit

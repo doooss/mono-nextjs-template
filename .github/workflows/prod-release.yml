@@ -1,0 +1,116 @@
+name: Production Release
+
+# OPTIONAL — vars.RELEASE_ENABLED == 'true' 일 때만 동작.
+# 수동 실행 (Actions UI "Run workflow" 또는 `gh workflow run prod-release.yml -f bump=minor`).
+#   1. 최신 canary(= sandbox 검증본) 커밋 위에 release 커밋(apps/*/package.json#version) 생성
+#   2. vX.Y.Z 태그 + GitHub Release(latest) — 노트 = 직전 stable 이후 전체 변경
+#   3. main 을 release 커밋으로 force-with-lease push
+#   4. 쌓인 canary pre-release / 태그 제거
+#   5. (vars.DEPLOY_ENABLED) vX.Y.Z 기준 이미지 빌드 → prod 배포
+#
+# main 에만 있는 핫픽스 커밋이 develop 에 없으면 force push 로 유실되므로 release.mjs 가 차단한다.
+# 같은 patch 가 develop 에 cherry-pick 돼 있으면 통과. 유실돼도 되는 커밋이면 skip_main_check 로 우회.
+# 직전 stable 이후 docs / ci 커밋뿐이면 release / 배포 생략 (release.mjs NON_DEPLOY_TYPES).
+# 태그 / main push 뒤 단계(GitHub Release 등)에서 실패하면 재실행은 중복 발행 없이 skip 된다 — deploy 도 생략되므로
+# 복구 = GitHub Release 수동 생성 + Actions → Deploy (reusable) 로 그 태그 배포.
+# hotfix 와 concurrency group 을 공유하지 않는다 (대기 중 run 취소 방지) — 동시 실행 시 force-with-lease 가 실패해 멈춘다.
+# 토큰 = secrets.RELEASE_TOKEN (보호 브랜치 bypass 권한 PAT / App 토큰) || github.token.
+#   github.token 으로 push 하면 후속 워크플로우가 트리거되지 않는다 (GitHub 제약).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 버전 증가 단위 (직전 stable 기준)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      base:
+        description: 릴리스할 canary 태그 (비우면 최신 canary)
+        type: string
+        required: false
+      skip_main_check:
+        description: main 전용 커밋 검사 생략 (해당 커밋은 force push 로 main 에서 사라짐)
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    if: vars.RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      tag: ${{ steps.plan.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Plan release version
+        id: plan
+        env:
+          BUMP: ${{ inputs.bump }}
+          BASE: ${{ inputs.base }}
+          SKIP_MAIN_CHECK: ${{ inputs.skip_main_check }}
+        run: |
+          git fetch origin main
+          node .github/scripts/release.mjs stable --bump "$BUMP" --main origin/main ${BASE:+--base "$BASE"} \
+            $([ "$SKIP_MAIN_CHECK" = "true" ] && echo --skip-main-check)
+
+      - name: Release commit + tag + main push
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --detach "$BASE_SHA"
+          node .github/scripts/release.mjs set-version "$VERSION"
+          git commit -am "chore(release): $TAG [skip ci]"
+          git tag -a "$TAG" -m "$TAG"
+          git push --force-with-lease="main:$(git rev-parse origin/main)" origin HEAD:refs/heads/main
+          git push origin "refs/tags/$TAG"
+
+      - name: GitHub Release
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          NOTES: ${{ steps.plan.outputs.notes_file }}
+        run: gh release create "$TAG" --latest --verify-tag --title "$TAG" --notes-file "$NOTES"
+
+      - name: Remove canary pre-releases
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          CANARY_TAGS: ${{ steps.plan.outputs.canary_tags }}
+        run: |
+          for t in $CANARY_TAGS; do
+            gh release delete "$t" --yes --cleanup-tag || git push origin --delete "refs/tags/$t" || true
+          done
+
+  deploy:
+    needs: release
+    if: needs.release.outputs.skip == 'false' && vars.DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: prod
+      tag: ${{ needs.release.outputs.tag }}
+    secrets: inherit

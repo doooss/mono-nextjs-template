@@ -1,0 +1,87 @@
+name: CI
+
+# 모든 push / PR 에서 실행. 설정 없이 동작한다 (secret 불필요).
+#   commits : 커밋 단위 감사 — Conventional Commits · Refs/Spec/ADR footer · done task 출고 게이트
+#             (.github/scripts/commit-audit.mjs). 결과 표 = Actions 실행 요약(Summary).
+#             vars.COMMIT_AUDIT_STRICT == 'true' 이면 warning 도 실패.
+#   scripts : .github/scripts · scripts 단위 테스트 (릴리스 · PR 본문 · 커밋 감사 · agent-work 도구)
+#   verify  : install → check-types → lint → test → build
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# PR 은 새 push 가 이전 run 을 대체해도 된다 (매 run 이 PR 범위 전체를 다시 감사).
+# push 는 run 마다 고유 group (sha) — 취소 / 대기 중 취소된 run 의 커밋(before..after)은 다시 감사되지 않으므로.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || format('push-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  commits:
+    name: Commit audit
+    # release 커밋([skip ci])은 GitHub 이 자동 건너뜀
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Audit commits
+        env:
+          COMMIT_AUDIT_STRICT: ${{ vars.COMMIT_AUDIT_STRICT }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node .github/scripts/commit-audit.mjs --event
+
+  scripts:
+    name: CI scripts test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - run: node --test ".github/scripts/*.test.mjs" "scripts/*.test.mjs"
+
+  verify:
+    name: Verify (types / lint / test / build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      # packageManager 필드(package.json)에서 pnpm 버전 자동 결정
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm check-types
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build

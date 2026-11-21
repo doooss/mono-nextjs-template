@@ -1,0 +1,102 @@
+name: PR Automation
+
+# PR 본문 / 라벨 자동화.
+#   commits: "## Changes" 의 commits 마커 블록을 PR 커밋 목록(type 별 분류 + 커밋 링크)으로 갱신
+#            + 본문의 `경로.md` 를 head 커밋 고정 blob 링크로 변환 (본문 수정(edited) 시에도 적용)
+#            + 제목 자동 관리: "<첫 커밋 제목> +N" (사람이 고친 제목은 유지)
+#   labels : 변경 경로 라벨(.github/labeler.yml) + PR 제목 conventional type 라벨(type: feat 등)
+# GITHUB_TOKEN 으로 수정한 본문은 워크플로우를 재트리거하지 않으므로 루프 없음.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+concurrency:
+  group: pr-automation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  commits:
+    # fork PR 은 GITHUB_TOKEN 이 읽기 전용 → 본문 / 라벨 수정 불가. 같은 저장소 PR 만
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # gh pr view/edit 는 기본적으로 로컬 git remote 로 repo 를 추론 — checkout 없는 job 에서 실패하므로 명시
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Update commit list in PR body
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" > "$RUNNER_TEMP/commits.json"
+          gh pr view "$PR" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          node .github/scripts/pr-body.mjs "$RUNNER_TEMP/commits.json" "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/next.md"
+          if cmp -s "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/next.md"; then
+            echo "PR body unchanged"
+          else
+            gh pr edit "$PR" --body-file "$RUNNER_TEMP/next.md"
+          fi
+
+      - name: Update PR title
+        run: |
+          # 자동 관리 제목만 "<첫 커밋 제목> +N" 으로 갱신. 사람이 고친 제목은 유지.
+          PR_TITLE="$(gh pr view "$PR" --json title --jq .title)" \
+            node .github/scripts/pr-body.mjs title "$RUNNER_TEMP/commits.json" > "$RUNNER_TEMP/title.txt"
+          if [[ -s "$RUNNER_TEMP/title.txt" ]]; then
+            gh pr edit "$PR" --title "$(cat "$RUNNER_TEMP/title.txt")"
+          else
+            echo "PR title unchanged"
+          fi
+
+  labels:
+    # commits job 이 제목을 바꿀 수 있으므로 그 뒤에 현재 제목으로 type 라벨 결정
+    needs: commits
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # gh pr view/edit 는 기본적으로 로컬 git remote 로 repo 를 추론 — checkout 없는 job 에서 실패하므로 명시
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/labeler@v7
+        with:
+          sync-labels: true
+
+      - name: Type label from PR title
+        run: |
+          TITLE="$(gh pr view "$PR" --json title --jq .title)"
+          type="$(printf '%s' "$TITLE" | sed -nE 's/^([a-zA-Z]+)(\([^)]*\))?!?:.*/\1/p' | tr '[:upper:]' '[:lower:]')"
+          case "$type" in
+            feat|fix|perf|refactor|revert|docs|test|build|ci|style|chore) want="type: $type" ;;
+            *) want=""; echo "::warning::PR 제목이 Conventional Commits 형식이 아님: $TITLE" ;;
+          esac
+          # 제목 type 이 바뀐 경우 이전 type 라벨 제거 (step shell = bash -eo pipefail)
+          for label in $(gh pr view "$PR" --json labels --jq '.labels[].name | select(startswith("type: ")) | sub("^type: "; "")'); do
+            if [[ "type: $label" != "$want" ]]; then
+              gh pr edit "$PR" --remove-label "type: $label"
+            fi
+          done
+          if [[ -n "$want" ]]; then
+            # issues labels API 는 없는 라벨을 자동 생성
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$want" --silent
+          fi

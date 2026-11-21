@@ -1,0 +1,114 @@
+name: Deploy (reusable)
+
+# OPTIONAL — Docker 배포. release 워크플로우는 vars.DEPLOY_ENABLED == 'true' 일 때만 호출한다.
+# 태그 checkout → docker/<app>.Dockerfile 빌드 → GHCR push (<tag>, <env>-latest)
+#   → (선택) environment secret DEPLOY_WEBHOOK_URL 로 POST — Coolify / Dokploy / Render 등 재배포 훅.
+# 이미지: ghcr.io/<owner>/<repo>-<app>. 추가 secret 없이 GITHUB_TOKEN 으로 push.
+# 앱 목록: inputs.apps → vars.DEPLOY_APPS → 기본값 (JSON 배열).
+# prod environment 에 required reviewers 를 걸면 배포 직전 승인 게이트가 된다.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: sandbox | prod
+        required: true
+        type: string
+      tag:
+        description: 배포할 git 태그 (vX.Y.Z / vX.Y.Z-canary.N) — checkout ref 겸 이미지 태그
+        required: true
+        type: string
+      apps:
+        description: 배포 대상 앱 JSON 배열 (비우면 vars.DEPLOY_APPS → 기본값)
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 배포 환경
+        required: true
+        type: choice
+        options: [sandbox, prod]
+      tag:
+        description: 재배포할 git 태그 (vX.Y.Z / vX.Y.Z-canary.N)
+        required: true
+        type: string
+      apps:
+        description: 배포 대상 앱 JSON 배열 (비우면 vars.DEPLOY_APPS → 기본값)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    name: ${{ matrix.app }} → ${{ inputs.environment }} (${{ inputs.tag }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}-${{ matrix.app }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(inputs.apps || vars.DEPLOY_APPS || '["web"]') }}
+    steps:
+      - name: Validate inputs
+        env:
+          TAG: ${{ inputs.tag }}
+          APP: ${{ matrix.app }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-canary\.[0-9]+)?$ ]] || { echo "::error::invalid tag: $TAG"; exit 1; }
+          [[ "$APP" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::invalid app: $APP"; exit 1; }
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Image name
+        id: image
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          [[ -f "docker/${APP}.Dockerfile" ]] || { echo "::error::docker/${APP}.Dockerfile 없음"; exit 1; }
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-${APP}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/${{ matrix.app }}.Dockerfile
+          push: true
+          labels: |
+            org.opencontainers.image.version=${{ inputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ inputs.tag }}
+            ${{ steps.image.outputs.name }}:${{ inputs.environment }}-latest
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      - name: Trigger rollout (optional)
+        env:
+          HOOK: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+          IMAGE: ${{ steps.image.outputs.name }}:${{ inputs.tag }}
+        run: |
+          if [[ -z "$HOOK" ]]; then
+            echo "::notice::DEPLOY_WEBHOOK_URL 없음 — 이미지 push 까지만 ($IMAGE)"
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" -H 'Content-Type: application/json' \
+            -d "{\"image\":\"$IMAGE\",\"environment\":\"${{ inputs.environment }}\",\"app\":\"${{ matrix.app }}\"}"

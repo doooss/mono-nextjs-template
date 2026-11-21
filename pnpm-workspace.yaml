@@ -1,0 +1,15 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'packages/config/*'
+
+# pnpm 11: dependency build scripts are blocked by default.
+# Allow only deps whose install script is required (native / prebuilt binaries).
+allowBuilds:
+  '@swc/core': true
+  'esbuild': true
+  'sharp': true
+  'unrs-resolver': true
+  '@tailwindcss/oxide': true
+  # jest-haste-map optional watcher — prebuilt binary packages suffice, skip node-gyp fallback.
+  '@parcel/watcher': false
