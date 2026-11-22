@@ -1,4 +1,4 @@
-// `pnpm spec:shots` — 스크린샷 사양(docs/specs/pages · components/*.md)마다 스크린샷을 찍는다.
+// `pnpm spec:shots` — 스크린샷 사양(docs/specs/pages · screens · components/*.md)마다 스크린샷을 찍는다.
 // 계획(route · viewport · 저장 경로)은 .github/scripts/spec-pages.mjs 가 만든다 — CI 검증(ship-gate.mjs)과 같은 파서.
 // 일부만: SPEC=<id|slug>[,…] pnpm spec:shots · 작업 중 바뀐 것만: pnpm spec:shots:changed
 import { execFileSync } from 'node:child_process';
@@ -76,6 +76,14 @@ for (const spec of pages) {
           `${spec.route} 가 ${new URL(page.url()).pathname} 로 리다이렉트됨 — 사양 route 또는 상태(mock/seed) 확인`,
         ).toBeNull();
         await page.evaluate(() => document.fonts.ready);
+        // 클라이언트 라우터 리다이렉트(Expo Router <Redirect> · router.replace)는 HTTP 3xx 가 없다 → 도착 경로로 확인
+        const landed = new URL(page.url()).pathname.replace(/\/+$/, '') || '/';
+        const wanted =
+          new URL(spec.route, page.url()).pathname.replace(/\/+$/, '') || '/';
+        expect(
+          landed,
+          `${spec.route} 가 ${landed} 로 이동함 (클라이언트 리다이렉트) — 사양 route 또는 상태(mock/seed) 확인`,
+        ).toBe(wanted);
         await page.screenshot({
           path: join(REPO_ROOT, shot.file),
           fullPage: true,

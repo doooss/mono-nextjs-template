@@ -19,7 +19,7 @@
       "dependsOn": ["^check-types"]
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "dev": {
@@ -42,6 +42,9 @@
         "SPEC_SHOTS_BASE_URL",
         "PLAYWRIGHT_*"
       ]
+    },
+    "transit": {
+      "dependsOn": ["^transit"]
     }
   }
 }
