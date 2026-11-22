@@ -69,11 +69,11 @@ export function isDeployPath(path) {
     /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json)$/.test(
       path,
     ) ||
-    /^(apps|packages)\/[^/]+\/(package|tsconfig[^/]*|nest-cli)\.json$/.test(
+    /^(apps|packages)\/[^/]+\/(package|tsconfig[^/]*|nest-cli|app|eas)\.json$/.test(
       path,
     ) ||
     /^apps\/[^/]+\/[^/]+\.config\.[cm]?[jt]s$/.test(path) ||
-    /^apps\/[^/]+\/(public|scripts)\//.test(path) ||
+    /^apps\/[^/]+\/(public|scripts|assets)\//.test(path) ||
     /^packages\/config\//.test(path)
   );
 }

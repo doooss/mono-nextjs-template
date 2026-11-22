@@ -149,6 +149,21 @@ describe('buildPlan', () => {
     assert.deepEqual(ids({ changed: ['apps/web/src/app/about/page.tsx'] }), [
       'pages/about',
     ]);
+    // 앱 화면(screens)도 같은 규칙 — route 필수, assets 는 screens/assets
+    put(
+      'docs/specs/screens/settings.md',
+      fm(
+        'route: /settings\nscreenshots: [mobile]\ncode: [apps/mobile/src/app/settings.tsx]',
+      ),
+    );
+    const screen = buildPlan(r).pages.find((p) => p.id === 'screens/settings');
+    assert.equal(
+      screen.shots[0].file,
+      'docs/specs/screens/assets/settings.mobile.png',
+    );
+    assert.deepEqual(ids({ changed: ['apps/mobile/src/app/settings.tsx'] }), [
+      'screens/settings',
+    ]);
     assert.deepEqual(
       buildPlan(r).pages.find((p) => p.id === 'components/button').shots[0]
         .file,

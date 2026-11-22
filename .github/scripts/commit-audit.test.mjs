@@ -458,6 +458,8 @@ describe('review round 2 regressions', () => {
       'apps/web/public/logo.svg',
       'package.json',
       'apps/api/tsconfig.build.json',
+      'apps/mobile/eas.json',
+      'apps/mobile/app.config.ts',
     ]) {
       const r = auditCommit(c('ci: bump node'), [M(path)], view);
       assert.ok(

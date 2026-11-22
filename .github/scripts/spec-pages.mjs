@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// 스크린샷 사양(page · component) → 스크린샷 계획 JSON (spec:shots 입력). 의존성 없음.
+// 스크린샷 사양(page · screen · component) → 스크린샷 계획 JSON (spec:shots 입력). 의존성 없음.
 //
 // CI 검증(ship-gate.mjs)과 같은 파서 / 규칙(shotPlan)을 쓰므로 "spec:shots 는 성공했는데
 // CI 는 스크린샷 없음" 같은 불일치가 생기지 않는다.
 //
 // usage: node .github/scripts/spec-pages.mjs [--only <id|slug>[,…]] [--changed]
-//   --only     pages/home · components/button · home (slug 가 한 개체에만 있으면 그대로)
+//   --only     pages/home · screens/home · components/button · home (slug 가 한 개체에만 있으면 그대로)
 //   --changed  작업 중 바뀐 파일(HEAD 대비 + untracked)의 사양 — frontmatter `code` 가 겹치거나 문서 자체가
 //              바뀐 사양 + 그것을 링크하는 사양 (예: Button 이 바뀌면 Button 을 쓰는 page 도)
 //   stdout = { "pages": [{ id, kind, slug, route, shots: [{ viewport, file }] }] }   (file = 저장소 루트 기준)
@@ -64,7 +64,11 @@ export function changedFiles(root) {
 }
 
 export function buildPlan(root, { only = null, changed = null } = {}) {
-  const files = ['docs/specs/pages', 'docs/specs/components']
+  const files = [
+    'docs/specs/pages',
+    'docs/specs/screens',
+    'docs/specs/components',
+  ]
     .flatMap((d) => walk(join(root, d)))
     .map((abs) => rel(root, abs))
     .filter(isShotSpecFile)

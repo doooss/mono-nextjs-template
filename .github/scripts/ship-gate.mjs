@@ -179,12 +179,12 @@ export function isReviewPassed(value) {
   return /^passed\b/i.test(v) && !/YYYY-MM-DD|rounds N\b/.test(v);
 }
 
-// 스크린샷 사양 = page(라우트) · component(미리보기 라우트). screenshots 필드 → 뷰포트 목록 (중복 제거).
+// 스크린샷 사양 = page(웹 라우트) · screen(앱 화면 라우트) · component(미리보기 라우트). screenshots 필드 → 뷰포트 목록 (중복 제거).
 //   필드 없음 → [desktop] · `none` / `[]` / 빈 블록 → [] (스크린샷 없음)
-export function specViewports(specText) {
+export function specViewports(specText, fallback = DEFAULT_VIEWPORTS) {
   const fm = parseFrontmatter(specText);
   const raw = fm?.data.screenshots;
-  if (raw === undefined) return DEFAULT_VIEWPORTS;
+  if (raw === undefined) return fallback;
   const list = asList(raw)
     .map((v) => String(v).trim().toLowerCase())
     .filter(Boolean);
@@ -196,7 +196,7 @@ export function specSlug(specPath) {
   return specPath.split('/').pop().replace(/\.md$/, '');
 }
 
-// docs/specs/<pages|components>/<slug>.md → docs/specs/<pages|components>/assets/<slug>.<viewport>.png
+// docs/specs/<pages|screens|components>/<slug>.md → 같은 폴더 assets/<slug>.<viewport>.png
 export function screenshotPath(specPath, viewport) {
   const kind = specPath.split('/')[2];
   return `docs/specs/${kind}/assets/${specSlug(specPath)}.${viewport}.png`;
@@ -204,8 +204,9 @@ export function screenshotPath(specPath, viewport) {
 
 // 스크린샷 사양 1개 → 계획. spec:shots(Playwright) 와 CI 검증이 **같은 함수**를 쓴다.
 //   { id: 'pages/home', kind, slug, route, shots: [{ viewport, file }], errors }
-//   page 는 route 필수. component 는 스크린샷을 찍을 때만 route(미리보기 라우트) 필수.
-export const SHOT_SPEC_RE = /^docs\/specs\/(pages|components)\/[^/]+\.md$/;
+//   page · screen 은 route 필수. component 는 스크린샷을 찍을 때만 route(미리보기 라우트) 필수.
+export const SHOT_SPEC_RE =
+  /^docs\/specs\/(pages|screens|components)\/[^/]+\.md$/;
 
 export function shotPlan(path, text) {
   const errors = [];
@@ -224,12 +225,16 @@ export function shotPlan(path, text) {
       shots: [],
       errors: [...errors, `frontmatter 없음: ${path}`],
     };
-  const viewports = specViewports(text);
+  // 앱 화면(screens)은 기본 mobile, 그 외 기본 desktop
+  const viewports = specViewports(
+    text,
+    kind === 'screens' ? ['mobile'] : DEFAULT_VIEWPORTS,
+  );
   const route = typeof fm.data.route === 'string' ? fm.data.route : null;
-  const needsRoute = kind === 'pages' || viewports.length > 0;
+  const needsRoute = kind !== 'components' || viewports.length > 0;
   if (needsRoute && (!route || !route.startsWith('/')))
     errors.push(
-      kind === 'pages'
+      kind !== 'components'
         ? `route 없음 또는 '/' 로 시작하지 않음: ${path}`
         : `route 없음 또는 '/' 로 시작하지 않음 — 미리보기 라우트(/spec/components/${slug}) 또는 screenshots: none: ${path}`,
     );
@@ -252,9 +257,9 @@ export function shotPlan(path, text) {
   };
 }
 
-// docs/specs/{pages,components} 아래 사양 파일 (README · _* · assets 제외). 하위 폴더 파일도 반환 → shotPlan 이 거부
+// docs/specs/{pages,screens,components} 아래 사양 파일 (README · _* · assets 제외). 하위 폴더 파일도 반환 → shotPlan 이 거부
 export function isShotSpecFile(path) {
-  const m = /^docs\/specs\/(pages|components)\/(.+)$/.exec(path);
+  const m = /^docs\/specs\/(pages|screens|components)\/(.+)$/.exec(path);
   if (!m) return false;
   const name = path.split('/').pop();
   return (
@@ -271,6 +276,7 @@ export const SPEC_DIRS = [
   'docs/specs/packages',
   'docs/specs/flows',
   'docs/specs/pages',
+  'docs/specs/screens',
   'docs/specs/components',
 ];
 
